@@ -140,20 +140,23 @@ class Llama:
         
         self.mae_vit = prepare_model('llama/mae_pretrain_vit_base.pth', 'mae_vit_base_patch16')
         
+        self.classification_head = nn.Linear(4096, 14)
+        
 #         for name, p in self.mae_vit.named_parameters():
 #             print(name, p.dtype)
 #             break
         
     def visual_forward_single(self, img):
-        x = torch.tensor(img)
+#         x = torch.tensor(img)
 
         # make it a batch-like
-        x = x.unsqueeze(dim=0)
-        x = torch.einsum('nhwc->nchw', x)
+#         x = x.unsqueeze(dim=0)
+#         x = torch.einsum('nhwc->nchw', x)
 #         print(x.float().dtype)
         
-        x = x.type(torch.float16)
-        latent = self.mae_vit(x)
+#         x = x.type(torch.float16)
+        print(img.shape)
+        latent = self.mae_vit(img)
 
         # run MAE
 #         latent = self.mae_vit(x.float())
@@ -164,11 +167,15 @@ class Llama:
     def classification_mission(self,
                               image):
         params = self.model.params
+        print(type(image))
+        print(image.shape)
         
         #生成图像embedding
-        image_embedding = self.visual_forward_single(image)
-        #image_embedding = image # only for test
+        #image_embedding = self.visual_forward_single(image)
+        image_embedding = image
         visual_query = torch.tensor(image_embedding)
+        visual_query = visual_query.to(self.visual_proj.weight.dtype)
+        print(visual_query.size())
         #visual_query = visual_query.squeeze(0)
 #         print(visual_query.size())
         visual_query = self.visual_proj(visual_query)
@@ -179,8 +186,16 @@ class Llama:
         # 下一步需要把他放进模型的第一层，跳过embedding层
         
         logits = self.model.forward(visual_query, 0)
+        print('logits dimension', logits.size())
         
-
+        CLS = logits[:, 0]
+        
+        CLS = CLS.to(self.classification_head.weight.dtype)
+        print('CLS dimension', CLS.size())
+        
+        logits = self.classification_head(CLS)
+        
+        print('final output dimension', logits.size())
         return logits
     
 

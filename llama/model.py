@@ -490,10 +490,13 @@ class Transformer(nn.Module):
         
         for layer in self.layers:
             h = layer(h, 0, freqs_cis, mask)
+            print(h.size())
         #经过所有层之后
-            
-        h = self.norm(h)
-        output = self.output(h).float()
+        
+        output = self.norm(h)
+        print('h after norm', h.size())
+        #output = self.output(h).float()
+        #print('output dimension', output.size())
         
         return output
         

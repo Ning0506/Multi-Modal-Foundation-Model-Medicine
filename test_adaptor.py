@@ -5,7 +5,8 @@ from PIL import Image
 import numpy as np
 
 import cv2
-
+import numpy as np
+'''
 path = 's50414267/02aa804e-bde0afdd-112c0b34-7bc16630-4e384014.jpg'
 img = Image.open(path)
 img = img.convert('RGB')
@@ -19,7 +20,10 @@ imagenet_std = np.array([0.229, 0.224, 0.225])
 
 img = img - imagenet_mean
 img = img / imagenet_std
+'''
+import ast
 
+# Open the .txt file and read its contents
 
 import fire
 
@@ -42,7 +46,8 @@ def main(
         max_seq_len=max_seq_len,
         max_batch_size=max_batch_size,
     )
-    prompts = img
+    prompts = data_array
+    print('prompt type', type(prompts))
     '''[
         # For these prompts, the expected answer is the natural continuation of the prompt
         img,
@@ -59,4 +64,12 @@ def main(
 
 
 if __name__ == "__main__":
+    with open('latent_representation.txt', 'r') as file:
+        data_str = file.read()
+
+    # Convert the string representation to a list of lists
+    data_list = ast.literal_eval(data_str)
+
+
+    data_array = np.array(data_list)
     fire.Fire(main)
