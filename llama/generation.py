@@ -27,6 +27,26 @@ from llama.mae import *
 Role = Literal["system", "user", "assistant"]
 
 
+class AttentionPooling(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super().__init__()
+        self.query = nn.Parameter(torch.randn(output_dim, 1))
+        self.key = nn.Linear(input_dim, output_dim)
+        self.value = nn.Linear(input_dim, output_dim)
+
+    def forward(self, text_embedding):
+        # text_embedding shape: (batch_size, seq_len, input_dim)
+        keys = self.key(text_embedding)  # (batch_size, seq_len, output_dim)
+        values = self.value(text_embedding)  # (batch_size, seq_len, output_dim)
+
+        # Calculate attention
+        attention_scores = torch.matmul(keys, self.query)  # (batch_size, seq_len, 1)
+        attention_scores = torch.softmax(attention_scores, dim=1)
+
+        # Weighted sum of value vectors
+        weighted_sum = torch.sum(values * attention_scores, dim=1)  # (batch_size, output_dim)
+        return weighted_sum
+
 class Message(TypedDict):
     role: Role
     content: str
@@ -53,9 +73,7 @@ SPECIAL_TAGS = [B_INST, E_INST, "<<SYS>>", "<</SYS>>"]
 UNSAFE_ERROR = "Error: special tags are not allowed as part of the prompt."
 
 
-
-
-class Llama:
+class Llama(nn.Module):
     @staticmethod
     def build(
         ckpt_dir: str,
@@ -88,6 +106,7 @@ class Llama:
             and loads the pre-trained model and tokenizer.
 
         """
+        super(Llama, self).__init__()
         if not torch.distributed.is_initialized():
             torch.distributed.init_process_group("nccl")
         if not model_parallel_is_initialized():
@@ -126,77 +145,93 @@ class Llama:
         model = Transformer(model_args)
         model.load_state_dict(checkpoint, strict=False)
         print(f"Loaded in {time.time() - start_time:.2f} seconds")
-        
-        
 
         return Llama(model, tokenizer)
 
     def __init__(self, model: Transformer, tokenizer: Tokenizer):
         self.model = model
         self.tokenizer = tokenizer
-        self.visual_proj = nn.Linear(768, 4096)
-        self.visual_proj_norm = nn.LayerNorm(4096)
-        #self.classification_head = nn.Linear(embed_dim, num_classes)
         
-        self.mae_vit = prepare_model('llama/mae_pretrain_vit_base.pth', 'mae_vit_base_patch16')
         
-        self.classification_head = nn.Linear(4096, 14)
+        self.visual_forward = prepare_model('llama/mae_pretrain_vit_base.pth', 'mae_vit_base_patch16')
         
-#         for name, p in self.mae_vit.named_parameters():
-#             print(name, p.dtype)
-#             break
+        self.attention_pooling = AttentionPooling(4096, 768)
         
-    def visual_forward_single(self, img):
-#         x = torch.tensor(img)
+    
+    
+    def get_trainable_params(self):
+        for name, para in self.named_parameters():
+            para.requires_grad = False
 
-        # make it a batch-like
-#         x = x.unsqueeze(dim=0)
-#         x = torch.einsum('nhwc->nchw', x)
-#         print(x.float().dtype)
+
+        train_param_name = ['visual_forward', 'attention_pooling']
+        for name, para in self.named_parameters():
+            for train_name in train_param_name:
+                if train_name in name:
+                    para.data = para.data.float()
+                    para.requires_grad = True
         
-#         x = x.type(torch.float16)
-        print(img.shape)
-        latent = self.mae_vit(img)
-
-        # run MAE
-#         latent = self.mae_vit(x.float())
-
-        return latent
+            
+            
 
     @torch.inference_mode()
-    def classification_mission(self,
-                              image):
-        params = self.model.params
-        print(type(image))
-        print(image.shape)
+    def forward_inference(self, image):
+        image_embedding = self.visual_forward(image)
         
-        #生成图像embedding
-        #image_embedding = self.visual_forward_single(image)
-        image_embedding = image
-        visual_query = torch.tensor(image_embedding)
-        visual_query = visual_query.to(self.visual_proj.weight.dtype)
-        print(visual_query.size())
-        #visual_query = visual_query.squeeze(0)
-#         print(visual_query.size())
-        visual_query = self.visual_proj(visual_query)
-        visual_query = self.visual_proj_norm(visual_query)
-#         print(visual_query.size())
-        #visual_query = self.forward_visual(imgs)
-        # visual_query 的size是 1*hyper*4096
-        # 下一步需要把他放进模型的第一层，跳过embedding层
-        
-        logits = self.model.forward(visual_query, 0)
-        print('logits dimension', logits.size())
-        
-        CLS = logits[:, 0]
-        
-        CLS = CLS.to(self.classification_head.weight.dtype)
-        print('CLS dimension', CLS.size())
-        
-        logits = self.classification_head(CLS)
-        
-        print('final output dimension', logits.size())
-        return logits
+        CLS = image_embedding[:, 0]
+
+        return CLS 
     
+    def forward_train(
+        self,
+        prompts,
+        image
+    ):
+        """
+        Generate text sequences based on provided prompts using the language generation model.
+
+        Args:
+            prompt_tokens (List[List[int]]): List of tokenized prompts, where each prompt is represented as a list of integers.
+            max_gen_len (int): Maximum length of the generated text sequence.
+            temperature (float, optional): Temperature value for controlling randomness in sampling. Defaults to 0.6.
+            top_p (float, optional): Top-p probability threshold for nucleus sampling. Defaults to 0.9.
+            logprobs (bool, optional): Flag indicating whether to compute token log probabilities. Defaults to False.
+            echo (bool, optional): Flag indicating whether to include prompt tokens in the generated output. Defaults to False.
+
+        Returns:
+            Tuple[List[List[int]], Optional[List[List[float]]]]: A tuple containing generated token sequences and, if logprobs is True, corresponding token log probabilities.
+
+        Note:
+            This method uses the provided prompts as a basis for generating text. It employs nucleus sampling to produce text with controlled randomness.
+            If logprobs is True, token log probabilities are computed for each generated token.
+
+        """
+        prompt_tokens = [self.tokenizer.encode(x, bos=True, eos=False) for x in prompts]
+        params = self.model.params
+        bsz = len(prompt_tokens)
+        assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
+
+        min_prompt_len = min(len(t) for t in prompt_tokens)
+        max_prompt_len = max(len(t) for t in prompt_tokens)
+        assert max_prompt_len <= params.max_seq_len
+        total_len = params.max_seq_len
+
+        pad_id = self.tokenizer.pad_id
+        tokens = torch.full((bsz, total_len), pad_id, dtype=torch.long, device="cuda")
+        for k, t in enumerate(prompt_tokens):
+            tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device="cuda")
+
+        prev_pos = 0
+        eos_reached = torch.tensor([False] * bsz, device="cuda")
+        input_text_mask = tokens != pad_id
+        token_logits = self.model.forward(tokens, prev_pos)
+        token_embedding = self.attention_pooling.forward(token_logits)
+        
+        
+        image_embedding = self.visual_forward(image)
+        
+        CLS = image_embedding[:, 0]
+
+        return token_embedding, CLS
 
     

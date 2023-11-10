@@ -14,7 +14,6 @@ from fairscale.nn.model_parallel.layers import (
     RowParallelLinear,
 )
 from torch import nn
-import numpy as np
 
 
 @dataclass
@@ -272,8 +271,6 @@ class Attention(nn.Module):
 
         """
         bsz, seqlen, _ = x.shape
-
-        
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
         xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
@@ -285,7 +282,6 @@ class Attention(nn.Module):
         self.cache_k = self.cache_k.to(xq)
         self.cache_v = self.cache_v.to(xq)
 
-    
         self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
         self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
 
@@ -451,9 +447,6 @@ class Transformer(nn.Module):
             params.dim, params.vocab_size, bias=False, init_method=lambda x: x
         )
 
-        #self.visual_proj = nn.Linear(768, 4096)
-        #self.visual_proj_norm = nn.LayerNorm(4096)
-        
         self.freqs_cis = precompute_freqs_cis(
             # Note that self.params.max_seq_len is multiplied by 2 because the token limit for the Llama 2 generation of models is 4096. 
             # Adding this multiplier instead of using 4096 directly allows for dynamism of token lengths while training or fine-tuning.
@@ -461,7 +454,7 @@ class Transformer(nn.Module):
         )
 
     @torch.inference_mode()
-    def forward(self, visual_query, start_pos: int):
+    def forward(self, tokens: torch.Tensor, start_pos: int):
         """
         Perform a forward pass through the Transformer model.
 
@@ -473,41 +466,10 @@ class Transformer(nn.Module):
             torch.Tensor: Output logits after applying the Transformer model.
 
         """
-        
-        
-        _bsz, seqlen, _ = visual_query.size()
-        h = visual_query
-        
-        freqs_cis = self.freqs_cis.to(h.device)
-        freqs_cis = freqs_cis[:seqlen]
-        
-        mask = None
-        mask = torch.full((1, 1, seqlen, seqlen), float("-inf"), device=h.device)
-        mask = torch.triu(mask, diagonal=0 + 1).type_as(h)
-        
-        #这一步可以mask掉一些信息
-        #下一步就要进入开始feed forward了
-        
-        for layer in self.layers:
-            h = layer(h, 0, freqs_cis, mask)
-            print(h.size())
-        #经过所有层之后
-        
-        output = self.norm(h)
-        print('h after norm', h.size())
-        #output = self.output(h).float()
-        #print('output dimension', output.size())
-        
-        return output
-        
-        
-        '''
-#         _bsz, seqlen, _ = tokens.size()
         _bsz, seqlen = tokens.shape
-        print(tokens)
-#         h = tokens
         h = self.tok_embeddings(tokens)
-        print(h.size())
+        print('h after embedding', h.size())
+        
         self.freqs_cis = self.freqs_cis.to(h.device)
         freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
 
@@ -521,5 +483,6 @@ class Transformer(nn.Module):
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
         h = self.norm(h)
+        print('h after llama', h.size())
         output = self.output(h).float()
-        return output'''
+        return output
